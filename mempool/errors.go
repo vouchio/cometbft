@@ -11,6 +11,8 @@ var ErrTxNotFound = errors.New("transaction not found in mempool")
 // ErrTxInCache is returned to the client if we saw tx earlier.
 var ErrTxInCache = errors.New("tx already exists in cache")
 
+var ErrTxInCacheSameNonce = errors.New("tx already exists in cache and has the same given nonce")
+
 // ErrTxTooLarge defines an error when a transaction is too big to be sent in a
 // message to other peers.
 type ErrTxTooLarge struct {

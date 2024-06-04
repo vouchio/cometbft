@@ -15,6 +15,13 @@ import (
 // ID is a hex-encoded crypto.Address.
 type ID string
 
+func (id ID) ShortString() ID {
+	if len(id) < 4 {
+		return id
+	}
+	return id[:4]
+}
+
 // IDByteLength is the length of a crypto.Address. Currently only 20.
 // TODO: support other length addresses ?
 const IDByteLength = crypto.AddressSize

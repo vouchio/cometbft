@@ -22,7 +22,7 @@ var errNotAllowed = errors.New("not allowed with `nop` mempool")
 var _ Mempool = &NopMempool{}
 
 // CheckTx always returns an error.
-func (*NopMempool) CheckTx(types.Tx, p2p.ID) (*abcicli.ReqRes, error) {
+func (*NopMempool) CheckTx(types.Tx, p2p.ID, []byte) (*abcicli.ReqRes, error) {
 	return nil, errNotAllowed
 }
 
@@ -72,6 +72,8 @@ func (*NopMempool) Size() int { return 0 }
 // SizeBytes always returns 0.
 func (*NopMempool) SizeBytes() int64 { return 0 }
 
+func (*NopMempool) GetSenders(_ types.TxKey) ([]p2p.ID, error) { return nil, nil }
+
 // NopMempoolReactor is a mempool reactor that does nothing.
 type NopMempoolReactor struct {
 	service.BaseService
@@ -91,6 +93,9 @@ func (*NopMempoolReactor) WaitSync() bool { return false }
 
 // GetChannels always returns nil.
 func (*NopMempoolReactor) GetChannels() []*p2p.ChannelDescriptor { return nil }
+
+// TryAddTx does nothing.
+func (*NopMempoolReactor) TryAddTx(types.Tx) (*abcicli.ReqRes, error) { return nil, nil }
 
 // AddPeer does nothing.
 func (*NopMempoolReactor) AddPeer(p2p.Peer) {}

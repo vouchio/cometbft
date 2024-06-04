@@ -11,6 +11,7 @@ import (
 	abcicli "github.com/cometbft/cometbft/abci/client"
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/cometbft/cometbft/config"
+	"github.com/cometbft/cometbft/crypto"
 	"github.com/cometbft/cometbft/internal/clist"
 	"github.com/cometbft/cometbft/libs/log"
 	cmtmath "github.com/cometbft/cometbft/libs/math"
@@ -55,6 +56,10 @@ type CListMempool struct {
 	// Keep a cache of already-seen txs.
 	// This reduces the pressure on the proxyApp.
 	cache TxCache
+
+	// Unique values for distinguishing txs when gossiping. Each value lives as long as the
+	// associated tx stays in the cache.
+	txNonces sync.Map // txKey -> []byte
 
 	logger  log.Logger
 	metrics *Metrics
@@ -108,12 +113,22 @@ func (mem *CListMempool) InMempool(txKey types.TxKey) bool {
 	return ok
 }
 
+func (mem *CListMempool) GetSenders(txKey types.TxKey) ([]p2p.ID, error) {
+	elem, ok := mem.getCElement(txKey)
+	if !ok {
+		return nil, ErrTxNotFound
+	}
+	memTx := elem.Value.(*mempoolTx)
+	return memTx.Senders(), nil
+}
+
 func (mem *CListMempool) addToCache(tx types.Tx) bool {
 	return mem.cache.Push(tx)
 }
 
 func (mem *CListMempool) forceRemoveFromCache(tx types.Tx) {
 	mem.cache.Remove(tx)
+	mem.txNonces.Delete(tx.Key())
 }
 
 // tryRemoveFromCache removes a transaction from the cache in case it can be
@@ -203,6 +218,10 @@ func (mem *CListMempool) Flush() {
 
 	mem.txsBytes.Store(0)
 	mem.cache.Reset()
+	mem.txNonces.Range(func(key, _ any) bool {
+		mem.txNonces.Delete(key)
+		return true
+	})
 
 	mem.removeAllTxs()
 }
@@ -227,10 +246,14 @@ func (mem *CListMempool) TxsWaitChan() <-chan struct{} {
 
 // It blocks if we're waiting on Update() or Reap().
 // Safe for concurrent use by multiple goroutines.
-func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID) (*abcicli.ReqRes, error) {
-	mem.updateMtx.RLock()
+func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID, nonce []byte) (*abcicli.ReqRes, error) {
+	mem.updateMtx.Lock()
 	// use defer to unlock mutex because application (*local client*) might panic
-	defer mem.updateMtx.RUnlock()
+	defer mem.updateMtx.Unlock()
+
+	if len(nonce) == 0 {
+		nonce = crypto.CRandBytes(nonceLen)
+	}
 
 	txSize := len(tx)
 
@@ -256,6 +279,11 @@ func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID) (*abcicli.ReqRes, e
 		return nil, ErrAppConnMempool{Err: err}
 	}
 
+	txKey := tx.Key()
+
+	// Store nonce and load the previous one (if any) to check it later.
+	prevNonce, nonceLoaded := mem.txNonces.LoadOrStore(txKey, nonce)
+
 	if added := mem.addToCache(tx); !added {
 		mem.metrics.AlreadyReceivedTxs.Add(1)
 		if sender != "" {
@@ -271,6 +299,10 @@ func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID) (*abcicli.ReqRes, e
 				}
 			}
 		}
+		if nonceLoaded && bytes.Equal(nonce, prevNonce.([]byte)) {
+			// same nonce for the same tx: reply HaveTx
+			return nil, ErrTxInCacheSameNonce
+		}
 		// TODO: consider punishing peer for dups,
 		// its non-trivial since invalid txs can become valid,
 		// but they can spam the same tx with little cost to them atm.
@@ -282,9 +314,9 @@ func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID) (*abcicli.ReqRes, e
 		Type: abci.CHECK_TX_TYPE_CHECK,
 	})
 	if err != nil {
-		panic(fmt.Errorf("CheckTx request for tx %s failed: %w", log.NewLazySprintf("%v", tx.Hash()), err))
+		panic(fmt.Errorf("CheckTx request for tx %s failed: %w", log.NewLazySprintf("%s", txKey[:]), err))
 	}
-	reqRes.SetCallback(mem.handleCheckTxResponse(tx, sender))
+	reqRes.SetCallback(mem.handleCheckTxResponse(tx, sender, nonce))
 
 	return reqRes, nil
 }
@@ -292,7 +324,7 @@ func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID) (*abcicli.ReqRes, e
 // handleCheckTxResponse handles CheckTx responses for transactions validated for the first time.
 //
 //   - sender optionally holds the ID of the peer that sent the transaction, if any.
-func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID) func(res *abci.Response) {
+func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID, nonce []byte) func(res *abci.Response) {
 	return func(r *abci.Response) {
 		res := r.GetCheckTx()
 		if res == nil {
@@ -334,6 +366,7 @@ func (mem *CListMempool) handleCheckTxResponse(tx types.Tx, sender p2p.ID) func(
 			height:    mem.height.Load(),
 			gasWanted: res.GasWanted,
 			tx:        tx,
+			nonce:     nonce,
 		}
 		if mem.addTx(&memTx, sender) {
 			mem.notifyTxsAvailable()

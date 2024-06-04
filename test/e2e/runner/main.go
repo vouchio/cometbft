@@ -288,7 +288,7 @@ func NewCLI() *CLI {
 		Use:   "logs",
 		Short: "Shows the testnet logs",
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return docker.ExecComposeVerbose(context.Background(), cli.testnet.Dir, "logs")
+			return docker.ExecComposeVerbose(context.Background(), cli.testnet.Dir, "logs", "--timestamps")
 		},
 	})
 

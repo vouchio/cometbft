@@ -17,16 +17,12 @@ type mempoolTx struct {
 	// ids of peers who've sent us this tx (as a map for quick lookups).
 	// senders: PeerID -> struct{}
 	senders sync.Map
+	nonce   []byte
 }
 
 // Height returns the height for this transaction.
 func (memTx *mempoolTx) Height() int64 {
 	return atomic.LoadInt64(&memTx.height)
-}
-
-func (memTx *mempoolTx) isSender(peerID p2p.ID) bool {
-	_, ok := memTx.senders.Load(peerID)
-	return ok
 }
 
 // Add the peer ID to the list of senders. Return true iff it exists already in the list.
@@ -38,4 +34,22 @@ func (memTx *mempoolTx) addSender(peerID p2p.ID) bool {
 		return true
 	}
 	return false
+}
+
+func (memTx *mempoolTx) Senders() []p2p.ID {
+	senders := make([]p2p.ID, 0)
+	memTx.senders.Range(func(key, _ any) bool {
+		senders = append(senders, key.(p2p.ID))
+		return true
+	})
+	return senders
+}
+
+func (memTx *mempoolTx) PickOneSender() p2p.ID {
+	sender := noSender
+	memTx.senders.Range(func(key, _ any) bool {
+		sender = key.(p2p.ID)
+		return false
+	})
+	return sender
 }

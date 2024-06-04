@@ -45,6 +45,11 @@ func Load(ctx context.Context, testnet *e2e.Testnet) error {
 		}
 	}
 
+	var maxDurationCh <-chan time.Time
+	if testnet.LoadMaxDuration > 0 {
+		maxDurationCh = time.After(time.Duration(testnet.LoadMaxDuration) * time.Second)
+	}
+
 	// Monitor successful and failed transactions, and abort on stalls.
 	success, failed := 0, 0
 	timeout := initialTimeout
@@ -57,6 +62,9 @@ func Load(ctx context.Context, testnet *e2e.Testnet) error {
 			timeout = stallTimeout
 		case <-chFailed:
 			failed++
+		case <-maxDurationCh:
+			logger.Info("load", "msg", log.NewLazySprintf("Finished after reaching %v seconds", testnet.LoadMaxDuration), "success", success, "tx/s", rate)
+			return nil
 		case <-time.After(timeout):
 			return fmt.Errorf("unable to submit transactions for %v", timeout)
 		case <-ctx.Done():

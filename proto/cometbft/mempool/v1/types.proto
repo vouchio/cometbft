@@ -3,15 +3,25 @@ package cometbft.mempool.v1;
 
 option go_package = "github.com/cometbft/cometbft/api/cometbft/mempool/v1";
 
-// Txs contains a list of transaction from the mempool.
-message Txs {
-  repeated bytes txs = 1;
+// Tx is a transaction
+message Tx {
+  bytes tx = 1;
+  bytes nonce = 2;
+}
+
+message HaveTx {
+  bytes tx_key = 1;
+}
+
+message Reset {
 }
 
 // Message is an abstract mempool message.
 message Message {
   // Sum of all possible messages.
   oneof sum {
-    Txs txs = 1;
+    Tx tx = 1;
+    HaveTx have_tx = 2;
+    Reset reset = 3;
   }
 }

@@ -16,6 +16,7 @@ import (
 
 	_ "net/http/pprof" //nolint: gosec
 
+	abcicli "github.com/cometbft/cometbft/abci/client"
 	cfg "github.com/cometbft/cometbft/config"
 	bc "github.com/cometbft/cometbft/internal/blocksync"
 	cs "github.com/cometbft/cometbft/internal/consensus"
@@ -90,6 +91,7 @@ type waitSyncP2PReactor interface {
 	p2p.Reactor
 	// required by RPC service
 	WaitSync() bool
+	TryAddTx(tx types.Tx) (*abcicli.ReqRes, error)
 }
 
 // Option sets a parameter for the node.
@@ -1000,7 +1002,7 @@ func makeNodeInfo(
 		Channels: []byte{
 			bc.BlocksyncChannel,
 			cs.StateChannel, cs.DataChannel, cs.VoteChannel, cs.VoteSetBitsChannel,
-			mempl.MempoolChannel,
+			mempl.MempoolChannel, mempl.MempoolControlChannel,
 			evidence.EvidenceChannel,
 			statesync.SnapshotChannel, statesync.ChunkChannel,
 		},

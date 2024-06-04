@@ -6,6 +6,8 @@ import (
 )
 
 var (
-	_ types.Wrapper   = &memprotos.Txs{}
+	_ types.Wrapper   = &memprotos.Tx{}
+	_ types.Wrapper   = &memprotos.HaveTx{}
+	_ types.Wrapper   = &memprotos.Reset{}
 	_ types.Unwrapper = &memprotos.Message{}
 )

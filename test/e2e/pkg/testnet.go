@@ -88,6 +88,7 @@ type Testnet struct {
 	LoadTxBatchSize                                      int
 	LoadTxConnections                                    int
 	LoadMaxTxs                                           int
+	LoadMaxDuration                                      int
 	ABCIProtocol                                         string
 	PrepareProposalDelay                                 time.Duration
 	ProcessProposalDelay                                 time.Duration
@@ -95,6 +96,7 @@ type Testnet struct {
 	VoteExtensionDelay                                   time.Duration
 	FinalizeBlockDelay                                   time.Duration
 	UpgradeVersion                                       string
+	LogLevel                                             string
 	Prometheus                                           bool
 	BlockMaxBytes                                        int64
 	VoteExtensionsEnableHeight                           int64
@@ -191,6 +193,7 @@ func NewTestnetFromManifest(manifest Manifest, file string, ifd InfrastructureDa
 		LoadTxBatchSize:                  manifest.LoadTxBatchSize,
 		LoadTxConnections:                manifest.LoadTxConnections,
 		LoadMaxTxs:                       manifest.LoadMaxTxs,
+		LoadMaxDuration:                  manifest.LoadMaxDuration,
 		ABCIProtocol:                     manifest.ABCIProtocol,
 		PrepareProposalDelay:             manifest.PrepareProposalDelay,
 		ProcessProposalDelay:             manifest.ProcessProposalDelay,
@@ -198,6 +201,7 @@ func NewTestnetFromManifest(manifest Manifest, file string, ifd InfrastructureDa
 		VoteExtensionDelay:               manifest.VoteExtensionDelay,
 		FinalizeBlockDelay:               manifest.FinalizeBlockDelay,
 		UpgradeVersion:                   manifest.UpgradeVersion,
+		LogLevel:                         manifest.LogLevel,
 		Prometheus:                       manifest.Prometheus,
 		BlockMaxBytes:                    manifest.BlockMaxBytes,
 		VoteExtensionsEnableHeight:       manifest.VoteExtensionsEnableHeight,

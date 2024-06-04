@@ -44,4 +44,9 @@ type Metrics struct {
 	// Number of connections being actively used for gossiping transactions
 	// (experimental feature).
 	ActiveOutboundConnections metrics.Gauge
+
+	TotalHaveTxMsgsReceived metrics.Counter `metrics_labels:"from"`
+	TotalResetMsgsSent      metrics.Counter
+	NumDisabledRoutes       metrics.Gauge
+	Redundancy              metrics.Gauge
 }

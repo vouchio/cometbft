@@ -9,12 +9,19 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
+	abcicli "github.com/cometbft/cometbft/abci/client"
 	protomem "github.com/cometbft/cometbft/api/cometbft/mempool/v1"
 	cfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/internal/clist"
 	"github.com/cometbft/cometbft/libs/log"
+	cmtsync "github.com/cometbft/cometbft/libs/sync"
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/types"
+)
+
+const (
+	noSender = p2p.ID("")
+	nonceLen = 8
 )
 
 // Reactor handles mempool tx broadcasting amongst peers.
@@ -27,6 +34,9 @@ type Reactor struct {
 
 	waitSync   atomic.Bool
 	waitSyncCh chan struct{} // for signaling when to start receiving and sending txs
+
+	// Enabling/disabling routes for disseminating txs.
+	router *gossipRouter
 
 	// Semaphores to keep track of how many connections to peers are active for broadcasting
 	// transactions. Each semaphore has a capacity that puts an upper bound on the number of
@@ -67,6 +77,7 @@ func (memR *Reactor) OnStart() error {
 	if !memR.config.Broadcast {
 		memR.Logger.Info("Tx broadcasting is disabled")
 	}
+	memR.router = newGossipRouter()
 	return nil
 }
 
@@ -74,13 +85,18 @@ func (memR *Reactor) OnStart() error {
 // reactor.
 func (memR *Reactor) GetChannels() []*p2p.ChannelDescriptor {
 	largestTx := make([]byte, memR.config.MaxTxBytes)
-	batchMsg := protomem.Message{
-		Sum: &protomem.Message_Txs{
-			Txs: &protomem.Txs{Txs: [][]byte{largestTx}},
-		},
-	}
+	batchMsg := protomem.Message{Sum: &protomem.Message_Tx{Tx: &protomem.Tx{Tx: largestTx}}}
+
+	key := types.Tx(largestTx).Key()
+	haveTxMsg := protomem.Message{Sum: &protomem.Message_HaveTx{HaveTx: &protomem.HaveTx{TxKey: key[:]}}}
 
 	return []*p2p.ChannelDescriptor{
+		{
+			ID:                  MempoolControlChannel,
+			Priority:            20,
+			RecvMessageCapacity: haveTxMsg.Size(),
+			MessageType:         &protomem.Message{},
+		},
 		{
 			ID:                  MempoolChannel,
 			Priority:            5,
@@ -133,39 +149,153 @@ func (memR *Reactor) AddPeer(peer p2p.Peer) {
 	}
 }
 
+func (memR *Reactor) RemovePeer(peer p2p.Peer, _ any) {
+	memR.Logger.Info("🟡 Remove peer: send Reset to other peers", "peer", peer.ID())
+
+	// Remove all routes with peer as source or target.
+	memR.router.resetRoutes(peer.ID())
+
+	// Broadcast Reset to all peers except sender.
+	memR.Switch.Peers().ForEach(func(p p2p.Peer) {
+		if p.ID() != peer.ID() {
+			memR.SendReset(p)
+		}
+	})
+	memR.mempool.metrics.NumDisabledRoutes.Set(float64(memR.router.numRoutes()))
+}
+
 // Receive implements Reactor.
 // It adds any received transactions to the mempool.
 func (memR *Reactor) Receive(e p2p.Envelope) {
-	memR.Logger.Debug("Receive", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
-	switch msg := e.Message.(type) {
-	case *protomem.Txs:
-		if memR.WaitSync() {
-			memR.Logger.Debug("Ignored message received while syncing", "msg", msg)
-			return
-		}
-
-		protoTxs := msg.GetTxs()
-		if len(protoTxs) == 0 {
-			memR.Logger.Error("received empty txs from peer", "src", e.Src)
-			return
-		}
-
-		for _, txBytes := range protoTxs {
-			tx := types.Tx(txBytes)
-			_, err := memR.mempool.CheckTx(tx, e.Src.ID())
-			if errors.Is(err, ErrTxInCache) {
-				memR.Logger.Debug("Tx already exists in cache", "tx", tx.Hash())
-			} else if err != nil {
-				memR.Logger.Info("Could not check tx", "tx", tx.Hash(), "err", err)
-			}
-		}
-	default:
-		memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
-		memR.Switch.StopPeerForError(e.Src, fmt.Errorf("mempool cannot handle message of type: %T", e.Message))
+	if memR.WaitSync() {
+		memR.Logger.Debug("Ignore message received while syncing", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
 		return
 	}
 
+	memR.Logger.Debug("Receive", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
+	senderID := e.Src.ID()
+
+	switch e.ChannelID {
+	case MempoolControlChannel:
+		switch msg := e.Message.(type) {
+		case *protomem.HaveTx:
+			txKey := types.TxKey(msg.GetTxKey())
+			memR.Logger.Info("🟠 Received HaveTx message", "from", senderID.ShortString(), "tx", txKey.String())
+
+			sources, err := memR.mempool.GetSenders(txKey)
+			if err != nil || len(sources) == 0 || sources[0] == noSender {
+				// Probably tx and sender got removed from the mempool.
+				memR.Logger.Info("👻 Received HaveTx but failed to get sender", "tx", txKey.String(), "err", err)
+				return
+			}
+
+			// do not gossip to peer that send us HaveTx any tx coming from the source of txKey
+			// TODO: Pick a random one
+			source := sources[0]
+			memR.router.disableRoute(source, senderID)
+			memR.Logger.Info("⛔️ Disable route", "source", source.ShortString(), "target", senderID.ShortString())
+			memR.mempool.metrics.TotalHaveTxMsgsReceived.With("from", string(senderID)).Add(1)
+			memR.mempool.metrics.NumDisabledRoutes.Set(float64(memR.router.numRoutes()))
+
+		case *protomem.Reset:
+			memR.router.resetRoutes(e.Src.ID())
+			memR.Logger.Info("🧹 Received Reset message", "from", e.Src.ID().ShortString())
+			memR.mempool.metrics.NumDisabledRoutes.Set(float64(memR.router.numRoutes()))
+
+		default:
+			memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
+			memR.Switch.StopPeerForError(e.Src, fmt.Errorf("mempool cannot handle message of type: %T", e.Message))
+		}
+
+	case MempoolChannel:
+		switch msg := e.Message.(type) {
+		case *protomem.Tx:
+			txBytes := msg.GetTx()
+			if len(txBytes) == 0 {
+				memR.Logger.Error("received empty tx from peer", "src", e.Src)
+				return
+			}
+			tx := types.Tx(txBytes)
+			_, _ = memR.tryAddTxWithSender(tx, e.Src, msg.GetNonce())
+		default:
+			memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
+			memR.Switch.StopPeerForError(e.Src, fmt.Errorf("mempool cannot handle message of type: %T", e.Message))
+		}
+
+	default:
+		memR.Logger.Error("unknown message channel", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
+		memR.Switch.StopPeerForError(e.Src, fmt.Errorf("mempool cannot handle message on channel: %T", e.Message))
+	}
+
 	// broadcasting happens from go routines per peer
+}
+
+// For txs added from RPC endpoints, that is, without sender or nonce.
+func (memR *Reactor) TryAddTx(tx types.Tx) (*abcicli.ReqRes, error) {
+	return memR.tryAddTxWithSender(tx, nil, nil)
+}
+
+// When source is nil, it means that the transaction comes from an RPC endpoint.
+func (memR *Reactor) tryAddTxWithSender(tx types.Tx, sender p2p.Peer, nonce []byte) (*abcicli.ReqRes, error) {
+	txKey := tx.Key()
+	txKeyString := txKey.String()
+	senderID := noSender
+	if sender != nil {
+		senderID = sender.ID()
+	}
+	memR.Logger.Debug("🔔 tryAddTxWithSender", "sender", senderID.ShortString(), "tx", txKeyString, "nonce", nonce)
+
+	reqRes, err := memR.mempool.CheckTx(tx, senderID, nonce)
+	switch {
+	case errors.Is(err, ErrTxInCache):
+		memR.Logger.Error("👯 Tx already exists in cache with different nonce", "sender", senderID.ShortString(), "tx", txKeyString)
+		// do not reply HaveTx: same tx have different origins. Possible attack
+
+	case errors.Is(err, ErrTxInCacheSameNonce):
+		memR.Logger.Info("👯 Tx already exists in cache with the same nonce", "sender", senderID.ShortString(), "tx", txKeyString)
+		if sender != nil {
+			memR.router.incDuplicateTxs()
+			if !memR.router.isHaveTxBlocked() {
+				if !sender.Send(p2p.Envelope{ChannelID: MempoolControlChannel, Message: &protomem.HaveTx{TxKey: txKey[:]}}) {
+					memR.Logger.Error("Failed to send HaveTx", "tx", txKeyString)
+				} else {
+					memR.Logger.Info("🔵 Send HaveTx message", "to", senderID.ShortString(), "tx", txKeyString)
+					memR.router.setBlockHaveTx()
+				}
+			} else {
+				memR.Logger.Info("🟤 Didn't send HaveTx message, sending is blocked")
+			}
+		} else {
+			memR.Logger.Error("OH my god! This shouldn't happen!")
+		}
+		return nil, err
+
+	case err != nil:
+		memR.Logger.Info("Could not check tx", "tx", txKeyString, "err", err)
+		return nil, err
+	}
+
+	// adjust redundancy
+	memR.router.incFirstTimeTx()
+	redundancy := memR.router.adjustRedundancy(memR.Logger, func() {
+		// Send Reset to a random peer.
+		p := memR.Switch.Peers().Random()
+		memR.SendReset(p)
+	})
+
+	// update metrics
+	if redundancy >= 0 {
+		memR.mempool.metrics.Redundancy.Set(redundancy)
+	}
+
+	return reqRes, nil
+}
+
+func (memR *Reactor) SendReset(p p2p.Peer) {
+	if !p.Send(p2p.Envelope{ChannelID: MempoolControlChannel, Message: &protomem.Reset{}}) {
+		memR.Logger.Error("Failed to send Reset", "peer", p.ID())
+	}
+	memR.mempool.metrics.TotalResetMsgsSent.Add(1)
 }
 
 func (memR *Reactor) EnableInOutTxs() {
@@ -203,6 +333,9 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 		}
 	}
 
+	// TODO Candidate to remove if cc-based algorithm works
+	sentTxs := make(map[types.TxKey]struct{})
+
 	for {
 		// In case of both next.NextWaitChan() and peer.Quit() are variable at the same time
 		if !memR.IsRunning() || !peer.IsRunning() {
@@ -225,42 +358,51 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 			}
 		}
 
-		// Make sure the peer is up to date.
-		peerState, ok := peer.Get(types.PeerStateKey).(PeerState)
-		if !ok {
-			// Peer does not have a state yet. We set it in the consensus reactor, but
-			// when we add peer in Switch, the order we call reactors#AddPeer is
-			// different every time due to us using a map. Sometimes other reactors
-			// will be initialized before the consensus reactor. We should wait a few
-			// milliseconds and retry.
-			time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
-			continue
-		}
-
-		// If we suspect that the peer is lagging behind, at least by more than
-		// one block, we don't send the transaction immediately. This code
-		// reduces the mempool size and the recheck-tx rate of the receiving
-		// node. See [RFC 103] for an analysis on this optimization.
-		//
-		// [RFC 103]: https://github.com/cometbft/cometbft/pull/735
 		memTx := next.Value.(*mempoolTx)
-		if peerState.GetHeight() < memTx.Height()-1 {
-			time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
-			continue
-		}
+		txKey := memTx.tx.Key()
+		txKeyString := txKey.String()
+		senders := memTx.Senders()
 
-		// NOTE: Transaction batching was disabled due to
-		// https://github.com/tendermint/tendermint/issues/5796
-
-		if !memTx.isSender(peer.ID()) {
-			success := peer.Send(p2p.Envelope{
-				ChannelID: MempoolChannel,
-				Message:   &protomem.Txs{Txs: [][]byte{memTx.tx}},
-			})
-			if !success {
+		// Check if tx was sent before.
+		if _, ok := sentTxs[txKey]; ok {
+			memR.Logger.Debug("🚱 do not send tx again to the same peer! ", "tx-sender", senders, "target", peer.ID().ShortString(), "tx", txKeyString)
+		} else if memR.router.areRoutesEnabled(senders, peer.ID()) { // Check if the route to this peer is enabled.
+			// Make sure the peer is up to date.
+			peerState, ok := peer.Get(types.PeerStateKey).(PeerState)
+			if !ok {
+				// Peer does not have a state yet. We set it in the consensus reactor, but
+				// when we add peer in Switch, the order we call reactors#AddPeer is
+				// different every time due to us using a map. Sometimes other reactors
+				// will be initialized before the consensus reactor. We should wait a few
+				// milliseconds and retry.
 				time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
 				continue
 			}
+
+			// If we suspect that the peer is lagging behind, at least by more than
+			// one block, we don't send the transaction immediately. This code
+			// reduces the mempool size and the recheck-tx rate of the receiving
+			// node. See [RFC 103] for an analysis on this optimization.
+			//
+			// [RFC 103]: https://github.com/cometbft/cometbft/pull/735
+			if peerState.GetHeight() < memTx.Height()-1 {
+				time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
+				continue
+			}
+
+			// NOTE: Transaction batching was disabled due to
+			// https://github.com/tendermint/tendermint/issues/5796
+
+			if !peer.Send(p2p.Envelope{ChannelID: MempoolChannel, Message: &protomem.Tx{Tx: memTx.tx, Nonce: memTx.nonce}}) {
+				time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
+				continue
+			}
+			memR.Logger.Info("✅ Sent Tx message", "tx-sender", senders, "to", peer.ID().ShortString(), "tx", txKeyString)
+
+			// mark tx as sent
+			sentTxs[txKey] = struct{}{}
+		} else {
+			memR.Logger.Debug("🚫 do not send tx! ", "tx-sender", senders, "target", peer.ID().ShortString(), "tx", txKeyString)
 		}
 
 		select {
@@ -273,4 +415,155 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 			return
 		}
 	}
+}
+
+type p2pIDSet = map[p2p.ID]struct{}
+
+type gossipRouter struct {
+	// A set of `source -> target` routes that are disabled for disseminating transactions. Source
+	// and target are node IDs.
+	disabledRoutes map[p2p.ID]p2pIDSet
+	first          int64 // number of transactions received for the first time
+	duplicate      int64 // number of duplicate transactions
+	mtx            cmtsync.RWMutex
+
+	blockHaveTx atomic.Bool
+}
+
+func newGossipRouter() *gossipRouter {
+	return &gossipRouter{
+		disabledRoutes: make(map[p2p.ID]p2pIDSet),
+	}
+}
+
+func (r *gossipRouter) setBlockHaveTx() {
+	r.blockHaveTx.Store(true)
+}
+
+func (r *gossipRouter) isHaveTxBlocked() bool {
+	return r.blockHaveTx.Load()
+}
+
+func (r *gossipRouter) incDuplicateTxs() {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	r.duplicate++
+}
+
+const (
+	targetRedundancy      = 1
+	targetRedundancySlack = 10  // expressed as % of targetRedundancy
+	txsPerAdjustment      = 500 // We probably need to make this bigger
+)
+
+func (r *gossipRouter) incFirstTimeTx() {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	r.first++
+}
+
+func (r *gossipRouter) adjustRedundancy(logger log.Logger, sendReset func()) float64 {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	if r.first >= txsPerAdjustment {
+		redundancy := float64(r.duplicate) / float64(r.first)
+		targetRedundancySlackAbs := float64(targetRedundancy) * float64(targetRedundancySlack) / 100.
+		if redundancy < targetRedundancy-targetRedundancySlackAbs {
+			logger.Info("TX redundancy BELOW limit, increasing it",
+				"redundancy", redundancy,
+				"limit", targetRedundancy+targetRedundancySlackAbs,
+			)
+			sendReset()
+		} else if targetRedundancy+targetRedundancySlackAbs <= redundancy {
+			logger.Info("TX redundancy ABOVE limit, decreasing it",
+				"redundancy", redundancy,
+				"limit", targetRedundancy-targetRedundancySlackAbs,
+			)
+			r.blockHaveTx.Store(false)
+		}
+		r.first = 0
+		r.duplicate = 0
+		return redundancy
+	}
+	return -1
+}
+
+// disableRoute marks the route `source -> target` as disabled.
+func (r *gossipRouter) disableRoute(source, target p2p.ID) {
+	if source == noSender || target == noSender {
+		// TODO: this shouldn't happen
+		return
+	}
+
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	targets, ok := r.disabledRoutes[source]
+	if !ok {
+		targets = make(p2pIDSet)
+	}
+	targets[target] = struct{}{}
+	r.disabledRoutes[source] = targets
+}
+
+// isRouteEnabled returns true iff the route source->target is enabled.
+func (r *gossipRouter) isRouteEnabled(source, target p2p.ID) bool {
+	r.mtx.RLock()
+	defer r.mtx.RUnlock()
+
+	// do not send to sender
+	if source == target {
+		return false
+	}
+
+	if targets, ok := r.disabledRoutes[source]; ok {
+		for p := range targets {
+			if p == target {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// areRoutesEnabled returns false iff all the routes from the list of sources to target are disabled.
+func (r *gossipRouter) areRoutesEnabled(sources []p2p.ID, target p2p.ID) bool {
+	if len(sources) == 0 {
+		return true
+	}
+	for _, s := range sources {
+		if r.isRouteEnabled(s, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// resetRoutes removes all disabled routes with peerID as source or target.
+func (r *gossipRouter) resetRoutes(peerID p2p.ID) {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	// remove peer as source
+	delete(r.disabledRoutes, peerID)
+
+	// remove peer as target
+	for _, targets := range r.disabledRoutes {
+		delete(targets, peerID)
+	}
+}
+
+// numRoutes returns the number of disabled routes.
+func (r *gossipRouter) numRoutes() int {
+	r.mtx.RLock()
+	defer r.mtx.RUnlock()
+
+	count := 0
+	for _, targets := range r.disabledRoutes {
+		count += len(targets)
+	}
+	return count
 }

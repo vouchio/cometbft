@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	abcicli "github.com/cometbft/cometbft/abci/client"
 	cfg "github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/crypto"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
@@ -62,6 +63,11 @@ type syncReactor interface {
 	WaitSync() bool
 }
 
+type mempoolReactor interface {
+	syncReactor
+	TryAddTx(tx types.Tx) (*abcicli.ReqRes, error)
+}
+
 // ----------------------------------------------
 // Environment contains objects and interfaces used by the RPC. It is expected
 // to be setup once during startup.
@@ -76,7 +82,7 @@ type Environment struct {
 	EvidencePool     sm.EvidencePool
 	ConsensusState   Consensus
 	ConsensusReactor syncReactor
-	MempoolReactor   syncReactor
+	MempoolReactor   mempoolReactor
 	P2PPeers         peers
 	P2PTransport     transport
 
