@@ -247,9 +247,9 @@ func (mem *CListMempool) TxsWaitChan() <-chan struct{} {
 // It blocks if we're waiting on Update() or Reap().
 // Safe for concurrent use by multiple goroutines.
 func (mem *CListMempool) CheckTx(tx types.Tx, sender p2p.ID, nonce []byte) (*abcicli.ReqRes, error) {
-	mem.updateMtx.Lock()
+	mem.updateMtx.RLock()
 	// use defer to unlock mutex because application (*local client*) might panic
-	defer mem.updateMtx.Unlock()
+	defer mem.updateMtx.RUnlock()
 
 	if len(nonce) == 0 {
 		nonce = crypto.CRandBytes(nonceLen)

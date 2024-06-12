@@ -1,4 +1,55 @@
+vote_extensions_enable_height = 1
+pbts_enable_height = 1
+prometheus = true
+
+load_tx_size_bytes = 500
+load_tx_batch_size = 100
+load_tx_connections = 1
+
 [node.validator00]
+zone = "Ireland"
+
 [node.validator01]
+zone = "Frankfurt"
+
 [node.validator02]
+zone = "S_Paulo"
+
 [node.validator03]
+zone = "Tokyo"
+
+[node.validator04]
+zone = "Mumbai"
+
+[node.validator05]
+zone = "Sydney"
+
+[node.validator06]
+zone = "Seoul"
+
+[node.validator07]
+zone = "Singapore"
+
+[node.validator08]
+zone = "Ireland"
+
+[node.validator09]
+zone = "N_Virginia"
+
+[node.validator10]
+zone = "Canada"
+
+[node.validator11]
+zone = "N_California"
+
+[node.validator12]
+zone = "London"
+
+[node.validator13]
+zone = "Oregon"
+
+[node.validator14]
+zone = "Ireland"
+
+[node.validator15]
+zone = "Frankfurt"

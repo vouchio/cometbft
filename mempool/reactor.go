@@ -155,12 +155,14 @@ func (memR *Reactor) RemovePeer(peer p2p.Peer, _ any) {
 	// Remove all routes with peer as source or target.
 	memR.router.resetRoutes(peer.ID())
 
-	// Broadcast Reset to all peers except sender.
-	memR.Switch.Peers().ForEach(func(p p2p.Peer) {
-		if p.ID() != peer.ID() {
-			memR.SendReset(p)
-		}
-	})
+	/*
+		// Broadcast Reset to all peers except sender.
+		memR.Switch.Peers().ForEach(func(p p2p.Peer) {
+			if p.ID() != peer.ID() {
+				memR.SendReset(p)
+			}
+		})
+	*/
 	memR.mempool.metrics.NumDisabledRoutes.Set(float64(memR.router.numRoutes()))
 }
 
@@ -252,7 +254,7 @@ func (memR *Reactor) tryAddTxWithSender(tx types.Tx, sender p2p.Peer, nonce []by
 		// do not reply HaveTx: same tx have different origins. Possible attack
 
 	case errors.Is(err, ErrTxInCacheSameNonce):
-		memR.Logger.Info("👯 Tx already exists in cache with the same nonce", "sender", senderID.ShortString(), "tx", txKeyString)
+		memR.Logger.Debug("👯 Tx already exists in cache with the same nonce", "sender", senderID.ShortString(), "tx", txKeyString)
 		if sender != nil {
 			memR.router.incDuplicateTxs()
 			if !memR.router.isHaveTxBlocked() {
@@ -263,7 +265,7 @@ func (memR *Reactor) tryAddTxWithSender(tx types.Tx, sender p2p.Peer, nonce []by
 					memR.router.setBlockHaveTx()
 				}
 			} else {
-				memR.Logger.Info("🟤 Didn't send HaveTx message, sending is blocked")
+				memR.Logger.Debug("🟤 Didn't send HaveTx message, sending is blocked")
 			}
 		} else {
 			memR.Logger.Error("OH my god! This shouldn't happen!")
@@ -277,11 +279,12 @@ func (memR *Reactor) tryAddTxWithSender(tx types.Tx, sender p2p.Peer, nonce []by
 
 	// adjust redundancy
 	memR.router.incFirstTimeTx()
-	redundancy := memR.router.adjustRedundancy(memR.Logger, func() {
+	redundancy, sendReset := memR.router.adjustRedundancy(memR.Logger)
+	if sendReset {
 		// Send Reset to a random peer.
 		p := memR.Switch.Peers().Random()
 		memR.SendReset(p)
-	})
+	}
 
 	// update metrics
 	if redundancy >= 0 {
@@ -397,7 +400,7 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 				time.Sleep(PeerCatchupSleepIntervalMS * time.Millisecond)
 				continue
 			}
-			memR.Logger.Info("✅ Sent Tx message", "tx-sender", senders, "to", peer.ID().ShortString(), "tx", txKeyString)
+			memR.Logger.Debug("✅ Sent Tx message", "tx-sender", senders, "to", peer.ID().ShortString(), "tx", txKeyString)
 
 			// mark tx as sent
 			sentTxs[txKey] = struct{}{}
@@ -464,11 +467,12 @@ func (r *gossipRouter) incFirstTimeTx() {
 	r.first++
 }
 
-func (r *gossipRouter) adjustRedundancy(logger log.Logger, sendReset func()) float64 {
+func (r *gossipRouter) adjustRedundancy(logger log.Logger) (float64, bool) {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 
 	if r.first >= txsPerAdjustment {
+		sendReset := false
 		redundancy := float64(r.duplicate) / float64(r.first)
 		targetRedundancySlackAbs := float64(targetRedundancy) * float64(targetRedundancySlack) / 100.
 		if redundancy < targetRedundancy-targetRedundancySlackAbs {
@@ -476,7 +480,7 @@ func (r *gossipRouter) adjustRedundancy(logger log.Logger, sendReset func()) flo
 				"redundancy", redundancy,
 				"limit", targetRedundancy+targetRedundancySlackAbs,
 			)
-			sendReset()
+			sendReset = true
 		} else if targetRedundancy+targetRedundancySlackAbs <= redundancy {
 			logger.Info("TX redundancy ABOVE limit, decreasing it",
 				"redundancy", redundancy,
@@ -486,9 +490,9 @@ func (r *gossipRouter) adjustRedundancy(logger log.Logger, sendReset func()) flo
 		}
 		r.first = 0
 		r.duplicate = 0
-		return redundancy
+		return redundancy, sendReset
 	}
-	return -1
+	return -1, false
 }
 
 // disableRoute marks the route `source -> target` as disabled.
