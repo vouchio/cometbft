@@ -52,3 +52,5 @@ type BatchVerifier interface {
 	// that signatures were added to the batch).
 	Verify() (bool, []bool)
 }
+
+// =================

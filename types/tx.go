@@ -8,7 +8,7 @@ import (
 
 	cmtproto "github.com/cometbft/cometbft/api/cometbft/types/v1"
 	"github.com/cometbft/cometbft/crypto/merkle"
-	"github.com/cometbft/cometbft/crypto/tmhash"
+	"github.com/cometbft/cometbft/crypto/txhash"
 	cmtbytes "github.com/cometbft/cometbft/libs/bytes"
 )
 
@@ -25,11 +25,14 @@ type (
 	TxKey [TxKeySize]byte
 )
 
-// Hash computes the TMHASH hash of the wire encoded transaction.
-func (tx Tx) Hash() []byte {
-	return tmhash.Sum(tx)
+// Hash computes the hash of the transaction.
+//
+// See crypto.TxHash.
+func (tx Tx) Hash() txhash.Bytes {
+	return txhash.Sum(tx)
 }
 
+// Key returns the sha256 hash of the transaction.
 func (tx Tx) Key() TxKey {
 	return sha256.Sum256(tx)
 }
@@ -42,8 +45,10 @@ func (tx Tx) String() string {
 // Txs is a slice of Tx.
 type Txs []Tx
 
-// Hash returns the Merkle root hash of the transaction hashes.
-// i.e. the leaves of the tree are the hashes of the txs.
+// Hash returns the Merkle root hash.
+// The leaves of the tree are the SHA256 hashes of the txs.
+//
+// See merkle.HashFromByteSlices.
 func (txs Txs) Hash() []byte {
 	hl := txs.hashList()
 	return merkle.HashFromByteSlices(hl)
