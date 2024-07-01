@@ -1,3 +1,3 @@
 - `[crypto]` Allow changing the hashing function for transactions and their
   string representation via `SetHash` and `SetFmtHash` functions in `txhash`
-  package. [\#3334](https://github.com/cometbft/cometbft/pull/3334)
+  package. [\#3383](https://github.com/cometbft/cometbft/issues/3383)
