@@ -114,6 +114,11 @@ func SetFmtHash(f func([]byte) string) {
 func Sum(bz []byte) Bytes {
 	return Bytes(hash.New().Sum(bz))
 }
+
+// New returns a new hash.Hash.
+func New() gohash.Hash {
+	return hash.New()
+}
 ```
 
 Let's break this down. By default, we use `sha256` standard crypto library.
