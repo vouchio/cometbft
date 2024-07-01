@@ -35,7 +35,9 @@ func (bz Bytes) Unwrap() []byte {
 
 // Sum returns the checksum of the data as Bytes.
 func Sum(bz []byte) Bytes {
-	return Bytes(New().Sum(bz))
+	h := New()
+	h.Write(bz)
+	return Bytes(h.Sum(nil))
 }
 
 // New returns a new hash.Hash.

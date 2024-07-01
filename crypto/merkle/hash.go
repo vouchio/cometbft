@@ -13,7 +13,8 @@ var (
 // returns h(<empty>).
 func emptyHash(h hash.Hash) []byte {
 	h.Reset()
-	return h.Sum([]byte{})
+	h.Write([]byte{})
+	return h.Sum(nil)
 }
 
 // returns h(0x00 || leaf).
