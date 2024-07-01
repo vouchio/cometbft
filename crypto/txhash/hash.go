@@ -33,20 +33,27 @@ func (bz Bytes) Unwrap() []byte {
 	return bz
 }
 
+// Sum returns the checksum of the data as Bytes.
+func Sum(bz []byte) Bytes {
+	return Bytes(New().Sum(bz))
+}
+
+// New returns a new hash.Hash.
+func New() gohash.Hash {
+	return hash.New()
+}
+
 // Set sets the hash function used for transaction hashing.
 //
-// Call this function before starting the node. Changing the hashing function
+// Only call this function before starting the chain. Changing the hashing function
 // after the chain has started can ONLY be done with a hard fork.
 func Set(h Hash) {
 	hash = h
 }
 
 // SetFmtHash sets the function used to convert a checksum to a string.
+//
+// Default is fmt.Sprintf("%X", bz).
 func SetFmtHash(f func([]byte) string) {
 	fmtHash = f
-}
-
-// Sum returns the checksum of the data as Bytes.
-func Sum(bz []byte) Bytes {
-	return Bytes(hash.New().Sum(bz))
 }

@@ -27,7 +27,7 @@ type (
 
 // Hash computes the hash of the transaction.
 //
-// See crypto.TxHash.
+// See txhash.Sum.
 func (tx Tx) Hash() txhash.Bytes {
 	return txhash.Sum(tx)
 }
@@ -46,12 +46,12 @@ func (tx Tx) String() string {
 type Txs []Tx
 
 // Hash returns the Merkle root hash.
-// The leaves of the tree are the SHA256 hashes of the txs.
+// The leaves of the tree are the  hashes of the txs.
 //
-// See merkle.HashFromByteSlices.
+// See merkle.HashFromByteSlicesWithHash.
 func (txs Txs) Hash() []byte {
 	hl := txs.hashList()
-	return merkle.HashFromByteSlices(hl)
+	return merkle.HashFromByteSlicesWithHash(txhash.New(), hl)
 }
 
 // Index returns the index of this transaction in the list, or -1 if not found.
