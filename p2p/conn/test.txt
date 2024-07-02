@@ -1,0 +1,45 @@
+BUFFER CASE
+
+Running tool: /usr/local/go/bin/go test -timeout 30s -coverprofile=/tmp/vscode-gorfYZ2L/go-code-cover github.com/cometbft/cometbft/p2p/conn
+
+evilconn read, c.readStep 0, c.readOffset 0, len 1
+evilconn read end, with readoffset 1, data len 1
+evilconn read, c.readStep 0, c.readOffset 1, len 34
+evilconn read end, with readoffset 0, data len 34
+evilconn read, c.readStep 1, c.readOffset 0, len 2048
+buffer data write:  1044 0
+evilconn read end, with readoffset 2048, data len 103
+evilconn read, c.readStep 1, c.readOffset 2048, len 2048
+buffer data write:  1044 0
+Shouldn't call this
+evilconn read end, with readoffset 2048, data len 2048
+--- FAIL: TestMakeSecretConnection (0.00s)
+    --- FAIL: TestMakeSecretConnection/all_good (0.00s)
+        /home/valar/Code/osmosis/cometbft/p2p/conn/evil_secret_connection_test.go:282: 
+            	Error Trace:	/home/valar/Code/osmosis/cometbft/p2p/conn/evil_secret_connection_test.go:282
+            	Error:      	Should be true
+            	Test:       	TestMakeSecretConnection/all_good
+            	Messages:   	SecretConnection: failed to decrypt the frame: chacha20poly1305: message authentication failed
+FAIL
+
+NORMAL CASE
+
+Running tool: /usr/local/go/bin/go test -timeout 30s -coverprofile=/tmp/vscode-gorfYZ2L/go-code-cover github.com/cometbft/cometbft/p2p/conn
+
+evilconn read, c.readStep 0, c.readOffset 0, len 1
+evilconn read end, with readoffset 1, data len 1
+evilconn read, c.readStep 0, c.readOffset 1, len 34
+evilconn read end, with readoffset 0, data len 34
+read auth sig msg
+evilconn read, c.readStep 1, c.readOffset 0, len 1044
+buffer data write:  1044 0
+evilconn read end, with readoffset 1044, data len 103
+evilconn read, c.readStep 1, c.readOffset 1044, len 941
+buffer data write:  1044 0
+evilconn read end, with readoffset 1985, data len 103
+evilconn read, c.readStep 1, c.readOffset 1985, len 838
+buffer data write:  1044 0
+Shouldn't call this
+evilconn read end, with readoffset 1985, data len 838
+--- FAIL: TestMakeSecretConnection (0.00s)
+    --- FAIL: TestMakeSecretConnection/all_good (0.00s)

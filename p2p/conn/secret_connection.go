@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net"
@@ -70,6 +71,7 @@ type SecretConnection struct {
 
 	conn       io.ReadWriteCloser
 	connWriter *bufio.Writer
+	connReader io.Reader
 
 	// net.Conn must be thread safe:
 	// https://golang.org/pkg/net/#Conn.
@@ -147,6 +149,8 @@ func MakeSecretConnection(conn io.ReadWriteCloser, locPrivKey crypto.PrivKey) (*
 	sc := &SecretConnection{
 		conn:       conn,
 		connWriter: bufio.NewWriterSize(conn, defaultWriteBufferSize),
+		connReader: bufio.NewReaderSize(conn, 2048),
+		// connReader: conn,
 		recvBuffer: nil,
 		recvNonce:  new([aeadNonceSize]byte),
 		sendNonce:  new([aeadNonceSize]byte),
@@ -250,7 +254,7 @@ func (sc *SecretConnection) Read(data []byte) (n int, err error) {
 	// read off the conn
 	sealedFrame := pool.Get(aeadSizeOverhead + totalFrameSize)
 	defer pool.Put(sealedFrame)
-	_, err = io.ReadFull(sc.conn, sealedFrame)
+	_, err = io.ReadFull(sc.connReader, sealedFrame)
 	if err != nil {
 		return n, err
 	}
@@ -429,10 +433,12 @@ func shareAuthSignature(sc io.ReadWriter, pubKey crypto.PubKey, signature []byte
 		},
 		func(_ int) (val any, abort bool, err error) {
 			var pba tmp2p.AuthSigMessage
+			fmt.Println("read auth sig msg")
 			_, err = protoio.NewDelimitedReader(sc, 1024*1024).ReadMsg(&pba)
 			if err != nil {
 				return nil, true, err // abort
 			}
+			fmt.Println("end read auth sig msg")
 
 			pk, err := cryptoenc.PubKeyFromProto(pba.PubKey)
 			if err != nil {

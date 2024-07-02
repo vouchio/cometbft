@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 
@@ -25,14 +26,19 @@ type buffer struct {
 }
 
 func (b *buffer) Read(data []byte) (n int, err error) {
+	fmt.Println("buffer data read: ", len(data), n)
 	return b.next.Read(data)
 }
 
 func (b *buffer) Write(data []byte) (n int, err error) {
+	defer func() {
+		fmt.Println("buffer data write end: ", len(b.next.Bytes()), n)
+	}()
 	return b.next.Write(data)
 }
 
 func (b *buffer) Bytes() []byte {
+	// fmt.Println("buffer data bytes: ", len(b.next.Bytes()))
 	return b.next.Bytes()
 }
 
@@ -41,6 +47,7 @@ func (*buffer) Close() error {
 }
 
 type evilConn struct {
+	// Secret connection we wrap
 	secretConn *SecretConnection
 	buffer     *buffer
 
@@ -79,6 +86,13 @@ func newEvilConn(shareEphKey, badEphKey, shareAuthSignature, badAuthSignature bo
 }
 
 func (c *evilConn) Read(data []byte) (n int, err error) {
+	fmt.Printf("evilconn read, c.readStep %d, c.readOffset %d, len %d\n", c.readStep, c.readOffset, len(data))
+	defer func() {
+		if err != nil {
+			fmt.Printf("evilconn read end, with this error: %s\n", err)
+		}
+		fmt.Printf("evilconn read end, with readoffset %d, data len %d\n", c.readOffset, n)
+	}()
 	if !c.shareEphKey {
 		return 0, io.EOF
 	}
@@ -127,10 +141,22 @@ func (c *evilConn) Read(data []byte) (n int, err error) {
 			if err != nil {
 				panic(err)
 			}
-			if c.readOffset > len(c.buffer.Bytes()) {
+			bufBz := c.buffer.Bytes()
+			if c.readOffset > len(bufBz) {
+				fmt.Println("read offset too big")
 				return len(data), nil
 			}
-			copy(data, c.buffer.Bytes()[c.readOffset:])
+			newBufData := bufBz[c.readOffset:]
+			copy(data, newBufData)
+			// c.readOffset += len(data)
+			fmt.Println("buffer len, new buffer len", len(bufBz), len(newBufData))
+			fmt.Println("read offset start, n", c.readOffset, n)
+			if c.readOffset > 0 {
+				c.readOffset += len(bufBz) - n
+			} else {
+				c.readOffset += len(newBufData)
+			}
+			fmt.Println("read offset end", c.readOffset)
 		} else {
 			bz, err := protoio.MarshalDelimited(&gogotypes.BytesValue{Value: []byte("select * from users;")})
 			if err != nil {
@@ -144,8 +170,8 @@ func (c *evilConn) Read(data []byte) (n int, err error) {
 				return len(data), nil
 			}
 			copy(data, c.buffer.Bytes())
+			c.readOffset += len(data)
 		}
-		c.readOffset += len(data)
 		return n, nil
 	default:
 		return 0, io.EOF
@@ -225,6 +251,7 @@ func (c *evilConn) signChallenge() []byte {
 	c.secretConn = &SecretConnection{
 		conn:       b,
 		connWriter: bufio.NewWriterSize(b, defaultWriteBufferSize),
+		connReader: b,
 		recvBuffer: nil,
 		recvNonce:  new([aeadNonceSize]byte),
 		sendNonce:  new([aeadNonceSize]byte),
@@ -250,10 +277,10 @@ func TestMakeSecretConnection(t *testing.T) {
 		conn       *evilConn
 		checkError func(error) bool // Function to check if the error matches the expectation
 	}{
-		{"refuse to share ethimeral key", newEvilConn(false, false, false, false), func(err error) bool { return errors.Is(err, io.EOF) }},
-		{"share bad ethimeral key", newEvilConn(true, true, false, false), func(err error) bool { return assert.Contains(t, err.Error(), "wrong wireType") }},
-		{"refuse to share auth signature", newEvilConn(true, false, false, false), func(err error) bool { return errors.Is(err, io.EOF) }},
-		{"share bad auth signature", newEvilConn(true, false, true, true), func(err error) bool { return errors.As(err, &ErrDecryptFrame{}) }},
+		// {"refuse to share ethimeral key", newEvilConn(false, false, false, false), func(err error) bool { return errors.Is(err, io.EOF) }},
+		// {"share bad ethimeral key", newEvilConn(true, true, false, false), func(err error) bool { return assert.Contains(t, err.Error(), "wrong wireType") }},
+		// {"refuse to share auth signature", newEvilConn(true, false, false, false), func(err error) bool { return errors.Is(err, io.EOF) }},
+		// {"share bad auth signature", newEvilConn(true, false, true, true), func(err error) bool { return errors.As(err, &ErrDecryptFrame{}) }},
 		{"all good", newEvilConn(true, false, true, false), func(err error) bool { return err == nil }},
 	}
 
@@ -262,10 +289,11 @@ func TestMakeSecretConnection(t *testing.T) {
 			privKey := ed25519.GenPrivKey()
 			_, err := MakeSecretConnection(tc.conn, privKey)
 			if tc.checkError != nil {
-				assert.True(t, tc.checkError(err))
+				assert.True(t, tc.checkError(err), err)
 			} else {
 				require.NoError(t, err)
 			}
+			t.Fail()
 		})
 	}
 }
