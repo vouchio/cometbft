@@ -233,12 +233,12 @@ func logNodeStartupInfo(state sm.State, pubKey crypto.PubKey, logger, consensusL
 	}
 }
 
-func onlyValidatorIsUs(state sm.State, pubKey crypto.PubKey) bool {
+func onlyValidatorIsUs(state sm.State, localAddr crypto.Address) bool {
 	if state.Validators.Size() > 1 {
 		return false
 	}
-	addr, _ := state.Validators.GetByIndex(0)
-	return bytes.Equal(pubKey.Address(), addr)
+	valAddr, _ := state.Validators.GetByIndex(0)
+	return bytes.Equal(localAddr, valAddr)
 }
 
 // createMempoolAndMempoolReactor creates a mempool and a mempool reactor based on the config.
@@ -246,21 +246,32 @@ func createMempoolAndMempoolReactor(
 	config *cfg.Config,
 	proxyApp proxy.AppConns,
 	state sm.State,
+	eventBus *types.EventBus,
 	waitSync bool,
 	memplMetrics *mempl.Metrics,
 	logger log.Logger,
-) (mempl.Mempool, waitSyncP2PReactor) {
+) (mempl.Mempool, mempoolReactor) {
 	switch config.Mempool.Type {
 	// allow empty string for backward compatibility
 	case cfg.MempoolTypeFlood, "":
 		logger = logger.With("module", "mempool")
+		options := []mempl.CListMempoolOption{
+			mempl.WithMetrics(memplMetrics),
+			mempl.WithPreCheck(sm.TxPreCheck(state)),
+			mempl.WithPostCheck(sm.TxPostCheck(state)),
+		}
+		if config.Mempool.ExperimentalPublishEventPendingTx {
+			options = append(options, mempl.WithNewTxCallback(func(tx types.Tx) {
+				_ = eventBus.PublishEventPendingTx(types.EventDataPendingTx{
+					Tx: tx,
+				})
+			}))
+		}
 		mp := mempl.NewCListMempool(
 			config.Mempool,
 			proxyApp.Mempool(),
 			state.LastBlockHeight,
-			mempl.WithMetrics(memplMetrics),
-			mempl.WithPreCheck(sm.TxPreCheck(state)),
-			mempl.WithPostCheck(sm.TxPostCheck(state)),
+			options...,
 		)
 		mp.SetLogger(logger)
 		reactor := mempl.NewReactor(
@@ -305,13 +316,14 @@ func createBlocksyncReactor(config *cfg.Config,
 	blockExec *sm.BlockExecutor,
 	blockStore *store.BlockStore,
 	blockSync bool,
+	localAddr crypto.Address,
 	logger log.Logger,
 	metrics *blocksync.Metrics,
 	offlineStateSyncHeight int64,
 ) (bcReactor p2p.Reactor, err error) {
 	switch config.BlockSync.Version {
 	case "v0":
-		bcReactor = blocksync.NewReactor(state.Copy(), blockExec, blockStore, blockSync, metrics, offlineStateSyncHeight)
+		bcReactor = blocksync.NewReactor(state.Copy(), blockExec, blockStore, blockSync, localAddr, metrics, offlineStateSyncHeight)
 	case "v1", "v2":
 		return nil, fmt.Errorf("block sync version %s has been deprecated. Please use v0", config.BlockSync.Version)
 	default:
@@ -591,6 +603,12 @@ func LoadStateFromDBOrGenesisDocProviderWithConfig(
 
 	if err = csGenDoc.GenesisDoc.ValidateAndComplete(); err != nil {
 		return sm.State{}, nil, ErrGenesisDoc{Err: err}
+	}
+
+	checkSumStr := hex.EncodeToString(csGenDoc.Sha256Checksum)
+	if err := tmhash.ValidateSHA256(checkSumStr); err != nil {
+		const formatStr = "invalid genesis doc SHA256 checksum: %s"
+		return sm.State{}, nil, fmt.Errorf(formatStr, err)
 	}
 
 	// Validate that existing or recently saved genesis file hash matches optional --genesis_hash passed by operator
