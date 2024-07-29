@@ -109,7 +109,7 @@ func (env *Environment) TxSearch(
 		}
 
 		apiResults = append(apiResults, &ctypes.ResultTx{
-			Hash:     types.Tx(r.Tx).Hash().Unwrap(),
+			Hash:     []byte(types.Tx(r.Tx).Hash()),
 			Height:   r.Height,
 			Index:    r.Index,
 			TxResult: r.Result,

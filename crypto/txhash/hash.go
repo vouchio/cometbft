@@ -29,10 +29,6 @@ func (bz Bytes) String() string {
 	return fmtHash(bz)
 }
 
-func (bz Bytes) Unwrap() []byte {
-	return bz
-}
-
 // Sum returns the checksum of the data as Bytes.
 func Sum(bz []byte) Bytes {
 	h := New()

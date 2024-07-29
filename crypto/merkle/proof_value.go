@@ -13,7 +13,7 @@ const ProofOpValue = "simple:v"
 
 // ErrTooManyArgs is returned when the input to [ValueOp.Run] has length
 // exceeding 1.
-var ErrTooManyArgs = errors.New("merkle: len(args) != 1")
+var ErrTooManyArgs = errors.New("merkle: len(args) > 1")
 
 // ValueOp takes a key and a single value as argument and
 // produces the root hash.  The corresponding tree structure is
